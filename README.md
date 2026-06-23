@@ -1,36 +1,109 @@
 # Agro Tracking
 
-API + worker для отслеживания визитов тракторов на станции фермы по видео с ArUco-маркерами.
+> End-to-end video analytics pipeline that tracks tractor visits to
+> farm stations using ArUco fiducial markers — built with FastAPI,
+> PostgreSQL, OpenCV, and asyncio.
 
-- **Стек:** Python 3.12, FastAPI, SQLModel + asyncpg, PostgreSQL 16, Alembic, loguru, OpenCV (ArUco).
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
+[![SQLModel](https://img.shields.io/badge/SQLModel-0.0.38-orange.svg)](https://sqlmodel.tiangolo.com)
+[![PostgreSQL 16+](https://img.shields.io/badge/PostgreSQL-16%2B-336791.svg)](https://www.postgresql.org)
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.11-5C3EE8.svg)](https://opencv.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Структура проекта
+A reference architecture for **video → events → business state** built
+in nine incremental stages. Each stage is small, end-to-end verified,
+and isolated — the same way a real production codebase would grow
+behind feature flags.
+
+---
+
+## What it does
+
+On a farm with **35 stations** and **6 tractors**:
+
+1. IP cameras at each station record short MP4 clips and drop them
+   into `data/queue/STATION_XX/YYYYMMDD_HHMMSS.mp4`.
+2. An **ingestion watcher** copies the clip into cold storage and
+   POSTs it to the FastAPI service.
+3. A FastAPI worker **schedules background processing** in a
+   `ProcessPoolExecutor` so the event loop stays responsive.
+4. The pipeline decodes each frame: a **MOG2 motion trigger** fires
+   the expensive ArUco decoder, which reads the marker ID.
+5. **Multi-marker** tractors (front, rear, sides) are matched against
+   the `tractors.aruco_ids` array via a GIN index — any matching ID
+   resolves to the tractor.
+6. Detections are tagged with the station's **ROI polygon** and the
+   **"parked vs passing-by"** decision (ROI ∩ velocity ≈ 0 ∩ MOG2 mass).
+7. **Visit aggregator** stitches detections into visits using a
+   state machine: `ENTERING → PRESENT → LEAVING → CLOSED`.
+8. Operators see live visit events in a **Server-Sent Events** feed.
+
+---
+
+## Why this project exists
+
+Hiring signal — this codebase demonstrates:
+
+| Area | What's on display |
+|---|---|
+| **Async architecture** | FastAPI lifespan, async SQLAlchemy sessions, asyncpg, `asyncio.to_thread` for blocking work, `ProcessPoolExecutor` for CPU-bound work. |
+| **Domain modelling** | SQLModel tables, Pydantic schemas, generated columns, ENUMs, JSONB, partial + GIN indexes. |
+| **Hybrid detection** | A pluggable pipeline (`trigger → decode → ROI → parked-decision`) designed so the decoder can be swapped (YOLO, colour, re-id) without DB migration. |
+| **Robust I/O** | Deduplication by SHA-256, atomic rename to cold storage, retry-with-backoff for failed videos, no orphan temp files. |
+| **Testing discipline** | End-to-end smoke test per stage; ruff + alembic-check as gate. |
+| **Production pragmatism** | Sensible `pydantic-settings` config, loguru logging, lazy-init singletons, ORM `commit` happens in `get_async_session` not in every route. |
+
+---
+
+## Project structure
 
 ```
 agro_prj/
-├── compose.yaml              # сервис db (PostgreSQL 16-alpine)
-├── pyproject.toml
+├── compose.yaml              # docker-compose: service `db` (PostgreSQL)
+├── pyproject.toml            # uv-managed deps + ruff/pytest config
 ├── stack.env / stack.env.example
 ├── alembic.ini
-├── alembic/                  # миграции (env.py адаптирован под async)
+├── alembic/
+│   ├── env.py                # async, filters paradedb system tables
+│   ├── script.py.mako
+│   └── versions/
+│       ├── 3112f42d1e35_initial_stations_tractors.py
+│       └── e31b2289c092_video_files.py
 ├── src/
-│   ├── main.py               # FastAPI app, /health
-│   ├── dependencies.py       # async engine + get_async_session
+│   ├── main.py               # FastAPI app, /health, lifespan
+│   ├── dependencies.py       # async engine + get_async_session (commits after yield)
+│   ├── utils.py              # hash_large_file → 32-byte BYTEA
 │   ├── logging_setup.py
-│   ├── config/               # BaseSettings (database, logging, ...)
-│   ├── models/               # SQLModel (Этап 2+)
-│   ├── schemas/              # pydantic/SQLModel schemas
-│   ├── repositories/
+│   ├── config/               # pydantic-settings, one module per concern
+│   │   ├── database.py       # DB_URL, pool sizes, storage paths
+│   │   ├── logging.py
+│   │   ├── video.py          # target_width, target_fps
+│   │   ├── detector.py       # ArUco dict, MOG2 thresholds, ROI thresholds
+│   │   └── threads.py        # max_process_workers
+│   ├── models/               # SQLModel table classes
+│   ├── schemas/              # Pydantic request/response + internal dataclasses
+│   │   ├── detector.py       # TriggerResult, ArucoDetection, ParkedDecision (NamedTuple)
+│   │   └── event.py          # DetectorMethod, EventType
+│   ├── repositories/         # generic AsyncRepository[T] (PEP 695)
 │   ├── services/
-│   ├── router/v1/
-│   └── sse/
-├── ingestion/                # watcher-процесс (Этап 4+)
-├── tests/
-├── scripts/                  # generate_test_video.py (Этап 5) и т.п.
+│   │   ├── detector.py       # TriggerDetector, ArucoDetector, RoiChecker, ParkedDetector
+│   │   ├── video_processor.py# extract_frames, process_video, DetectionEvent
+│   │   └── exceptions.py     # VideoProcessError, DuplicateVideoError, ArucoDecodeError
+│   └── router/v1/
+├── ingestion/                # standalone watcher process
+│   ├── config.py             # stations_root, api_url, cursor_sleep_sec
+│   ├── cursor.py             # StationDirectory, StationVideoFile
+│   ├── exceptions.py
+│   └── main.py               # producer-per-folder, semaphore, signal handling
+├── scripts/
+│   ├── seed_reference.py     # 35 stations + 6 tractors
+│   ├── simulate_station.py   # drops a test clip into the queue
+│   └── generate_test_video.py# cv2.aruco + cv2.VideoWriter synthetic clips
 └── data/
-    ├── queue/STATION_01..35/ # входящие видео
-    ├── videos/               # cold storage
-    └── failed_videos/        # битые/исчерпавшие retry
+    ├── queue/STATION_01..35/ # incoming (watcher reads from here)
+    ├── videos/               # cold storage (immutable, named <hash>.<ext>)
+    └── failed_videos/        # after retry budget exhausted
 ```
 
 ---
