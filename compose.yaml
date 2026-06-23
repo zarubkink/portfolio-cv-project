@@ -1,9 +1,9 @@
 services:
   db:
-    # По умолчанию — postgres:16-alpine (см. PROJECT_SCAFFOLD_PROMPT.md § 1).
+    # По умолчанию — postgres:17-alpine.
     # Если Docker Hub недоступен, можно переопределить через DB_IMAGE,
     # например: DB_IMAGE=paradedb/paradedb:0.20.0-pg17
-    image: ${DB_IMAGE:-postgres:16-alpine}
+    image: ${DB_IMAGE:-postgres:17-alpine}
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agro}

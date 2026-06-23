@@ -9,17 +9,11 @@ stack.env
 logs/
 .pytest_cache/
 .ruff_cache/
+.md
 
 # IDE
 .vscode/
 .idea/
 
-# Data (gitignored, but keep .gitkeep for dirs)
-data/database/
-data/videos/*
-!data/videos/.gitkeep
-data/failed_videos/*
-!data/failed_videos/.gitkeep
-data/queue/*
-!data/queue/.gitkeep
-!data/queue/STATION_*/
+stack.env
+data/
