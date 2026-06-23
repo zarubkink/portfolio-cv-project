@@ -1,0 +1,20 @@
+services:
+  db:
+    # По умолчанию — postgres:16-alpine (см. PROJECT_SCAFFOLD_PROMPT.md § 1).
+    # Если Docker Hub недоступен, можно переопределить через DB_IMAGE,
+    # например: DB_IMAGE=paradedb/paradedb:0.20.0-pg17
+    image: ${DB_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agro}
+      POSTGRES_DB: ${POSTGRES_DB:-agro}
+    volumes:
+      - ./data/database:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agro} -d ${POSTGRES_DB:-agro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
