@@ -39,6 +39,7 @@ async def forward_video_to_api(
     ended = started + timedelta(seconds=config.default_video_duration_sec)
     params = {
         "filepath": str(entry.storage_path),
+        "station_code": entry.station_code,
         "started_at": to_utc_iso(started),
         "ended_at": to_utc_iso(ended),
     }
