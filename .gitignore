@@ -1,19 +1,28 @@
+# Build artefacts
+.venv/
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
 *.egg-info/
 .venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environment / secrets
 .env
 .env.local
 stack.env
 *.log
 logs/
-.pytest_cache/
-.ruff_cache/
-.md
 
 # IDE
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
 
-stack.env
+
 data/
