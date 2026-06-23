@@ -33,11 +33,10 @@ target_metadata = SQLModel.metadata
 
 
 def include_object(object, name, type_, reflected, compare_to):
+    # Skip extension-managed tables that we never declared in SQLModel.
     if type_ == "table" and name in {
-        "spatial_ref_sys",
-        "_typmod_cache",
-        "paradedb_internal",
-        "paradedb_testing",
+        "spatial_ref_sys",  # PostGIS
+        "_typmod_cache",  # ParadeDB (kept defensively in case it returns)
     }:
         return False
     return True

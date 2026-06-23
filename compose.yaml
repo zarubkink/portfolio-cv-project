@@ -1,6 +1,6 @@
 services:
   db:
-    image: paradedb/paradedb:${POSTGRES_DOCKER_TAG}
+    image: postgres:${POSTGRES_DOCKER_TAG}
     restart: unless-stopped
     env_file: stack.env
     volumes:
