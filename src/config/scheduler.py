@@ -62,5 +62,15 @@ def get_scheduler_settings() -> SchedulerSettings:
             _scheduler_settings.failed_videos_folder = (
                 database_settings.failed_videos_folder
             )
-        _scheduler_settings.failed_videos_folder.mkdir(parents=True, exist_ok=True)
     return _scheduler_settings
+
+
+def ensure_scheduler_dirs() -> None:
+    """Create the failed-videos folder if it doesn't exist.
+
+    Separated from :func:`get_scheduler_settings` so importing the module
+    is side-effect free. The FastAPI lifespan calls this on startup.
+    """
+    settings = get_scheduler_settings()
+    if settings.failed_videos_folder is not None:
+        settings.failed_videos_folder.mkdir(parents=True, exist_ok=True)

@@ -44,11 +44,16 @@ class VideoRetryScheduler:
     def __init__(self) -> None:
         if getattr(self, "_initialised", False):
             return
-        settings = get_scheduler_settings()
         self._initialised = True
         self._running = False
         self._task: asyncio.Task | None = None
-        self._semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+        self._semaphore: asyncio.Semaphore | None = None
+
+    def _sem(self) -> asyncio.Semaphore:
+        if self._semaphore is None:
+            settings = get_scheduler_settings()
+            self._semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+        return self._semaphore
 
     async def start(self) -> None:
         settings = get_scheduler_settings()
@@ -174,7 +179,7 @@ class VideoRetryScheduler:
         is_unlimited: bool,
     ) -> None:
         settings = get_scheduler_settings()
-        async with self._semaphore:
+        async with self._sem():
             task_id = uuid.uuid4().hex[:12]
             async with AsyncSession(engine) as session:
                 try:

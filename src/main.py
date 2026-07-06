@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.config.database import settings as database_settings
 from src.config.logging import logging_settings
-from src.config.scheduler import get_scheduler_settings
+from src.config.scheduler import ensure_scheduler_dirs
 from src.dependencies import engine
 from src.logging_setup import configure_logging
 from src.router import router
@@ -21,7 +21,7 @@ configure_logging(logging_settings, filename="api.log")
 async def lifespan(app: FastAPI):
     database_settings.videos_storage.mkdir(parents=True, exist_ok=True)
     database_settings.failed_videos_folder.mkdir(parents=True, exist_ok=True)
-    get_scheduler_settings()
+    ensure_scheduler_dirs()
     await scheduler.start()
     logger.info("Agro Tracking API started")
     try:
