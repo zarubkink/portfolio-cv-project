@@ -245,7 +245,7 @@ class VideoRetryScheduler:
                 )
             return
 
-        new_retry_count = (current_retry_count or 0) + 1
+        new_retry_count = vf.retry_count if vf.retry_count is not None else 0
         if new_retry_count >= settings.max_retry_attempts:
             logger.warning(
                 f"[{task_id}] video {video_id} exceeded max retry attempts "
@@ -257,10 +257,9 @@ class VideoRetryScheduler:
         else:
             logger.error(
                 f"[{task_id}] video {video_id} retry failed "
-                f"(retry_count={new_retry_count}): {error}"
+                f"(retry_count={new_retry_count}/{settings.max_retry_attempts}): "
+                f"{error}"
             )
-            await video_service.increment_retry_count(video_id)
-            await session.commit()
 
 
 scheduler = VideoRetryScheduler()

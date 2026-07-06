@@ -7,6 +7,13 @@ from src.models.video_file import VideoFile
 from src.repositories.base import AsyncRepository
 
 
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Drop tzinfo so the value can be compared against TIMESTAMP WITHOUT TZ columns."""
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(UTC).replace(tzinfo=None)
+
+
 class VideoFileRepository(AsyncRepository[VideoFile]):
     def __init__(self, session):
         super().__init__(VideoFile, session)
@@ -44,7 +51,9 @@ class VideoFileRepository(AsyncRepository[VideoFile]):
         state transition (PROCESSING → COMPLETED, …). For PROCESSING,
         the absence of a recent ``updated_at`` indicates the worker died.
         """
-        threshold = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+        threshold = _to_naive_utc(
+            datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+        )
         stmt = (
             select(VideoFile)
             .where(VideoFile.status == status)

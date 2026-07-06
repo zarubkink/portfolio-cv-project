@@ -196,7 +196,11 @@ async def test_handle_retry_failure_retriable_marks_unlimited(
 async def test_handle_retry_failure_increments_within_limit(
     monkeypatch, fake_session, reset_scheduler_singleton
 ):
-    """Non-retriable errors below the cap simply bump retry_count."""
+    """Below the cap, the scheduler only logs — the handler already incremented.
+
+    The post-increment retry_count is read straight off the row, so we
+    pass a value that is still strictly below max_retry_attempts.
+    """
     fake_video = _make_video_file(id=11, status="FAILED", retry_count=1)
 
     with (
@@ -214,23 +218,23 @@ async def test_handle_retry_failure_increments_within_limit(
             task_id="t1",
             video_id=11,
             storage_uri="/x.mp4",
-            current_retry_count=1,
+            current_retry_count=0,
             is_unlimited=False,
             error=RuntimeError("boom"),
             session=fake_session,
         )
 
-    video_service.increment_retry_count.assert_awaited_once_with(11)
     video_service.mark_permanently_failed.assert_not_awaited()
-    fake_session.commit.assert_awaited_once()
+    video_service.increment_retry_count.assert_not_awaited()
+    fake_session.commit.assert_not_awaited()
 
 
 @pytest.mark.unit
 async def test_handle_retry_failure_marks_invalid_at_cap(
     monkeypatch, fake_session, reset_scheduler_singleton
 ):
-    """When retry_count+1 hits the cap the video is moved to INVALID."""
-    fake_video = _make_video_file(id=12, status="FAILED", retry_count=2)
+    """Once retry_count reaches max, the video moves to INVALID + failed_videos/."""
+    fake_video = _make_video_file(id=12, status="FAILED", retry_count=3)
 
     with (
         patch.object(scheduler_module, "engine", MagicMock()),
