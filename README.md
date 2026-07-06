@@ -69,7 +69,9 @@ agro_prj/
 │   ├── script.py.mako
 │   └── versions/
 │       ├── 3112f42d1e35_initial_stations_tractors.py
-│       └── e31b2289c092_video_files.py
+│       ├── e31b2289c092_video_files.py
+│       ├── 0003_events.py
+│       └── 0004_events_updated_at.py
 ├── src/
 │   ├── main.py               # FastAPI app, /health, lifespan
 │   ├── dependencies.py       # async engine + get_async_session (commits after yield)
@@ -89,6 +91,10 @@ agro_prj/
 │   ├── services/
 │   │   ├── detector.py       # TriggerDetector, ArucoDetector, RoiChecker, ParkedDetector
 │   │   ├── video_processor.py# extract_frames, process_video, DetectionEvent
+│   │   ├── video_executor.py # ProcessPoolExecutor wrapper
+│   │   ├── video_handler.py  # background pipeline (CREATED → PROCESSING → COMPLETED/FAILED)
+│   │   ├── event_service.py  # bulk-insert events for one video
+│   │   ├── scheduler.py      # VideoRetryScheduler (stale + retry ticks)
 │   │   └── exceptions.py     # VideoProcessError, DuplicateVideoError, ArucoDecodeError
 │   └── router/v1/
 ├── ingestion/                # standalone watcher process
@@ -316,6 +322,7 @@ LOG_LEVEL=DEBUG
 | `POST`   | `/v1/videos/handle` | Server-side file path → enqueue for processing (used by ingestion) |
 | `GET`    | `/v1/videos` | List videos |
 | `GET`    | `/v1/videos/{id}` | Read one with frames/triggers/events counts |
+| `POST`   | `/v1/admin/scheduler/tick` | Run one pass of the retry scheduler on demand |
 
 See [docs/API.md](docs/API.md) (WIP) for full request/response shapes.
 
@@ -346,7 +353,7 @@ The repo's `pyproject.toml` configures `ruff` for strict linting and
 | 4 | Folder watcher (ingestion) → E2E | ✅ |
 | 5 | Video processor (MOG2 + ArUco + ROI + Parked) | ✅ |
 | 6 | `ProcessPoolExecutor` integration with `/handle` + events table | ✅ |
-| 7 | Scheduler for retry FAILED | ⏳ |
+| 7 | Scheduler for retry FAILED | ✅ |
 | 8 | Visit aggregator (state machine) + API | ⏳ |
 | 9 | SSE for realtime + integration tests | ⏳ |
 
