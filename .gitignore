@@ -6,7 +6,6 @@ __pycache__/
 *.so
 .Python
 *.egg-info/
-.venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -24,5 +23,19 @@ logs/
 .DS_Store
 Thumbs.db
 
-stack.env
-data/
+# Runtime data
+data/database/
+data/videos/*
+data/failed_videos/*
+data/queue/*/*.mp4
+data/queue/*/*.partial
+!data/videos/.gitkeep
+!data/failed_videos/.gitkeep
+!data/queue/.gitkeep
+# Per-station queues: dirs are created on demand by the watcher.
+# Each STATION_XX/ contains its own .gitignore (see scripts/init_queue_dirs.py).
+data/queue/STATION_*/
+
+# Tooling / orchestration metadata (NOT for the public repo)
+.opencode/
+PROJECT_SCAFFOLD_PROMPT.md
