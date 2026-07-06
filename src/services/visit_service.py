@@ -36,6 +36,7 @@ from src.models.video_file import VideoFile
 from src.models.visit import Visit
 from src.repositories.visit import VisitRepository
 from src.schemas.visit import VisitState
+from src.sse.channels import tractor_status_channel
 
 
 def _to_naive_utc(dt: datetime) -> datetime:
@@ -147,6 +148,7 @@ class VisitService:
                     f"Visit {visit.id} → PRESENT (entry_seen="
                     f"{visit.entry_seen_seconds:.1f}s)"
                 )
+                await self._publish_status_change(visit, event_id=event.id)
         elif visit.state == VisitState.PRESENT:
             visit.last_seen_at = frame_time
             visit.last_event_id = event.id
@@ -155,6 +157,7 @@ class VisitService:
             visit.last_seen_at = frame_time
             visit.last_event_id = event.id
             logger.info(f"Visit {visit.id} → PRESENT (resumed)")
+            await self._publish_status_change(visit, event_id=event.id)
         else:  # CLOSED — should not happen here, but log if it does
             logger.warning(
                 f"Visit {visit.id} is CLOSED but received an event; ignoring"
@@ -185,6 +188,7 @@ class VisitService:
             if gap >= self.exit_confirm:
                 visit.state = VisitState.LEAVING
                 logger.info(f"Visit {visit.id} → LEAVING (gap={gap:.1f}s)")
+                await self._publish_status_change(visit)
 
         if visit.state == VisitState.LEAVING:
             gap = (
@@ -198,6 +202,7 @@ class VisitService:
                 logger.info(
                     f"Visit {visit.id} → CLOSED (duration={visit.duration_seconds}s)"
                 )
+                await self._publish_status_change(visit)
         self.session.add(visit)
 
     # ───────────────────────────────────────────────────────────────
@@ -229,6 +234,7 @@ class VisitService:
                 visit.last_event_id = event_id
             self.session.add(visit)
             await self.session.flush()
+            await self._publish_status_change(visit, event_id=event_id)
             return visit
         except IntegrityError:
             await self.session.rollback()
@@ -376,6 +382,44 @@ class VisitService:
                     deleted_enterings += 1
         await self.session.commit()
         return {"recovered_visits": len(visits), "deleted_enterings": deleted_enterings}
+
+    # ───────────────────────────────────────────────────────────────
+    # SSE
+    # ───────────────────────────────────────────────────────────────
+
+    async def _publish_status_change(
+        self,
+        visit: Visit,
+        *,
+        event_id: int | None = None,
+    ) -> None:
+        """Fan-out a state-machine event to SSE subscribers.
+
+        Failures are logged and swallowed: the DB has already been
+        written to, so a dead SSE client must not roll back the
+        transaction.
+        """
+        try:
+            arrived_at = visit.arrived_at
+            payload = {
+                "type": "visit_state_change",
+                "visit_id": visit.id,
+                "tractor_id": visit.tractor_id,
+                "station_id": visit.station_id,
+                "state": visit.state.value,
+                "arrived_at": arrived_at.isoformat() if arrived_at else None,
+                "last_seen_at": (
+                    visit.last_seen_at.isoformat() if visit.last_seen_at else None
+                ),
+                "duration_seconds": visit.duration_seconds,
+                "event_id": event_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            await tractor_status_channel.publish(payload, event="visit_state_change")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.opt(exception=exc).warning(
+                f"failed to publish SSE for visit {visit.id}"
+            )
 
 
 __all__ = ["VisitService"]

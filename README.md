@@ -113,6 +113,7 @@ agro_prj/
 │   ├── models/               # SQLModel table classes
 │   ├── schemas/              # Pydantic request/response + NamedTuples
 │   ├── repositories/         # generic AsyncRepository[T]
+│   ├── sse/                  # pub/sub broker + channels (tractor_status)
 │   ├── services/
 │   │   ├── detector.py
 │   │   ├── video_processor.py
@@ -291,6 +292,48 @@ station)"; the loser of a race is rolled back and adopts the winner.
 
 ---
 
+## Realtime updates
+
+`/v1/status/stream` is an SSE endpoint backed by an in-process pub/sub
+broker (`src/sse/`). Each subscriber gets a dedicated
+`asyncio.Queue`; `VisitService` publishes one frame per state
+transition:
+
+```
+event: ready
+data: {"status": "listening"}
+
+event: visit_state_change
+data: {"type":"visit_state_change","visit_id":42,"tractor_id":7,
+       "station_id":3,"state":"ENTERING","arrived_at":null,
+       "last_seen_at":"2026-06-21T12:00:00","duration_seconds":null,
+       "event_id":901,"timestamp":"2026-06-21T12:00:00.123+00:00"}
+```
+
+`state` is one of `ENTERING`, `PRESENT`, `LEAVING`, `CLOSED`. SSE
+failures are logged and swallowed so a dead client never rolls back a
+committed transition. Quick demo:
+
+```bash
+curl -N http://localhost:8000/v1/status/stream &
+curl -X POST http://localhost:8000/v1/admin/scheduler/tick
+```
+
+The tick itself doesn't fire SSE events (it doesn't change visit
+state), but it triggers any pending retry work which in turn produces
+visit events. For an end-to-end demo, upload a real video:
+
+```bash
+curl -N http://localhost:8000/v1/status/stream &
+curl -X POST http://localhost:8000/v1/videos/upload \
+  -F "file=@./test_aruco.mp4" \
+  -F "station_id=1" \
+  -F "started_at=2026-06-21T12:00:00Z" \
+  -F "ended_at=2026-06-21T12:00:06Z"
+```
+
+---
+
 ## Retry scheduler
 
 `VideoRetryScheduler` runs a periodic tick:
@@ -364,6 +407,7 @@ LOG_LEVEL=INFO
 | `GET`    | `/v1/status/stations` | Active stations with tractors on each |
 | `GET`    | `/v1/status/tractor/{id}` | Where is this tractor right now? (`ABSENT` if no open visit) |
 | `GET`    | `/v1/status/visits/history` | Closed visits, filterable by tractor/station |
+| `GET`    | `/v1/status/stream` | SSE stream of `visit_state_change` events |
 | `POST`   | `/v1/admin/scheduler/tick` | One pass of the retry scheduler on demand |
 
 ---
@@ -375,7 +419,8 @@ uv sync                                 # install deps
 uv run ruff check src/ ingestion/ scripts/ tests/   # lint
 uv run ruff format src/ ingestion/ scripts/ tests/  # auto-format
 uv run alembic check                    # drift detection vs models
-uv run pytest tests/unit/               # unit tests
+uv run pytest tests/unit/               # fast isolated tests (no I/O)
+uv run pytest tests/integration/        # E2E; requires the compose stack up
 ```
 
 The repo's `pyproject.toml` configures `ruff` for strict linting and
