@@ -16,7 +16,7 @@ from src.dependencies import get_async_session
 from src.schemas.visit import VisitPublic
 from src.services.visit_service import VisitService
 
-router = APIRouter(prefix="/v1/status", tags=["status"])
+router = APIRouter(prefix="/status", tags=["status"])
 
 
 @router.get("/tractors")

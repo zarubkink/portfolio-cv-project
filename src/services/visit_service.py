@@ -132,9 +132,10 @@ class VisitService:
         frame_time: datetime,
         event: Event,
     ) -> None:
+        now = _to_naive_utc(frame_time)
         if visit.state == VisitState.ENTERING:
-            anchor = visit.last_seen_at or visit.created_at or frame_time
-            elapsed = (frame_time - anchor).total_seconds()
+            anchor = _to_naive_utc(visit.last_seen_at or visit.created_at or frame_time)
+            elapsed = (now - anchor).total_seconds()
             visit.entry_seen_seconds = (visit.entry_seen_seconds or 0.0) + elapsed
             visit.last_seen_at = frame_time
             visit.last_event_id = event.id
@@ -166,9 +167,10 @@ class VisitService:
         ENTERING visits older than ``3 * entry_confirm`` are deleted as
         false positives (tractor drove past without actually entering).
         """
+        now = _to_naive_utc(current_time)
         if visit.state == VisitState.ENTERING:
-            anchor = visit.created_at or current_time
-            gap = (current_time - anchor).total_seconds()
+            anchor = _to_naive_utc(visit.created_at or current_time)
+            gap = (now - anchor).total_seconds()
             if gap >= self.entry_confirm * 3:
                 logger.info(
                     f"Visit {visit.id} deleted (ENTERING timeout, gap={gap:.1f}s)"
@@ -177,18 +179,22 @@ class VisitService:
             return
 
         if visit.state == VisitState.PRESENT:
-            gap = (current_time - (visit.last_seen_at or current_time)).total_seconds()
+            gap = (
+                now - _to_naive_utc(visit.last_seen_at or current_time)
+            ).total_seconds()
             if gap >= self.exit_confirm:
                 visit.state = VisitState.LEAVING
                 logger.info(f"Visit {visit.id} → LEAVING (gap={gap:.1f}s)")
 
         if visit.state == VisitState.LEAVING:
-            gap = (current_time - (visit.last_seen_at or current_time)).total_seconds()
+            gap = (
+                now - _to_naive_utc(visit.last_seen_at or current_time)
+            ).total_seconds()
             if gap >= 2 * self.exit_confirm:
                 visit.state = VisitState.CLOSED
-                visit.departed_at = (visit.last_seen_at or current_time) + timedelta(
-                    seconds=self.exit_confirm
-                )
+                visit.departed_at = _to_naive_utc(
+                    visit.last_seen_at or current_time
+                ) + timedelta(seconds=self.exit_confirm)
                 logger.info(
                     f"Visit {visit.id} → CLOSED (duration={visit.duration_seconds}s)"
                 )
@@ -246,7 +252,7 @@ class VisitService:
 
     async def get_current_tractors(self) -> list[dict]:
         visits = await self.repo.list_open()
-        now = datetime.now(UTC)
+        now = _to_naive_utc(datetime.now(UTC))
         return [
             {
                 "tractor_id": v.tractor_id,
@@ -271,7 +277,7 @@ class VisitService:
                 "tractor_id": tractor_id,
                 "state": VisitState.ABSENT.value,
             }
-        now = datetime.now(UTC)
+        now = _to_naive_utc(datetime.now(UTC))
         return {
             "tractor_id": visit.tractor_id,
             "station_id": visit.station_id,
@@ -296,7 +302,7 @@ class VisitService:
             .where(Station.is_active == True)  # noqa: E712
         )
         rows = result.all()
-        now = datetime.now(UTC)
+        now = _to_naive_utc(datetime.now(UTC))
         grouped: dict[int, dict] = {}
         for station, visit, tractor in rows:
             entry = grouped.setdefault(
@@ -356,12 +362,12 @@ class VisitService:
     async def recover_open_visits(self) -> dict:
         """Run on startup: delete ENTERING visits that survived a crash."""
         visits = await self.repo.list_open()
-        now = datetime.now(UTC)
+        now = _to_naive_utc(datetime.now(UTC))
         deleted_enterings = 0
         for visit in visits:
             if visit.state == VisitState.ENTERING:
-                anchor = visit.created_at or now
-                age = (now - _to_naive_utc(anchor)).total_seconds()
+                anchor = _to_naive_utc(visit.created_at or datetime.now(UTC))
+                age = (now - anchor).total_seconds()
                 if age > self.entry_confirm * visit_settings.recovery_grace_multiplier:
                     logger.info(
                         f"Visit {visit.id} deleted on startup (ENTERING age={age:.1f}s)"
