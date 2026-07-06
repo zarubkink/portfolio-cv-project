@@ -139,6 +139,7 @@ agro_prj/
 │   ├── seed_reference.py
 │   ├── simulate_station.py
 │   ├── generate_test_video.py
+│   ├── benchmark_executor.py   # ThreadPool vs ProcessPool on ArUco
 │   └── smoke_*.py
 └── data/
     ├── queue/STATION_01..35/ # incoming (watcher reads from here)
@@ -249,6 +250,15 @@ picklable so they cross `ProcessPoolExecutor` boundaries for free.
 CPU-bound work runs in a `ProcessPoolExecutor` (`MAX_PROCESS_WORKERS`
 env var). Status transitions (`CREATED → PROCESSING → COMPLETED /
 FAILED`) and the retry increment live in `video_handler.py`.
+
+For batches of clips the dispatcher uses
+`run_videos_in_parallel(jobs, max_concurrent=None)` in
+`src/services/video_executor.py`, which awaits each clip via
+`loop.run_in_executor` and gathers them with `asyncio.gather`. The
+companion `run_videos_in_thread_pool(jobs)` is the GIL-bound baseline
+that `scripts/benchmark_executor.py` measures against — on an 8-core
+box the process pool finishes the same corpus ~1.5x faster than the
+thread pool.
 
 ---
 
