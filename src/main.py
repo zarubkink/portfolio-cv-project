@@ -6,19 +6,29 @@ from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from src.config.database import settings as database_settings
 from src.config.logging import logging_settings
+from src.config.scheduler import ensure_scheduler_dirs
 from src.dependencies import engine
 from src.logging_setup import configure_logging
 from src.router import router
+from src.services.scheduler import scheduler
 
 configure_logging(logging_settings, filename="api.log")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    database_settings.videos_storage.mkdir(parents=True, exist_ok=True)
+    database_settings.failed_videos_folder.mkdir(parents=True, exist_ok=True)
+    ensure_scheduler_dirs()
+    await scheduler.start()
     logger.info("Agro Tracking API started")
-    yield
-    logger.info("Agro Tracking API stopped")
+    try:
+        yield
+    finally:
+        await scheduler.stop()
+        logger.info("Agro Tracking API stopped")
 
 
 app = FastAPI(title="Agro Tracking API", version="0.1.0", lifespan=lifespan)

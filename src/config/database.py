@@ -28,6 +28,3 @@ class DatabaseSettings(BaseSettings):
 
 
 settings = DatabaseSettings()
-
-settings.videos_storage.mkdir(parents=True, exist_ok=True)
-settings.failed_videos_folder.mkdir(parents=True, exist_ok=True)

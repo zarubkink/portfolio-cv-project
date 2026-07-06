@@ -165,9 +165,16 @@ async def process_video_with_error_handling(
                 logger.warning(
                     f"[{task_id}] retriable error, leaving for unlimited retry: {exc}"
                 )
+                await session.commit()
             else:
                 await video_service.increment_retry_count(video_id)
+                await video_service.update_status(
+                    video_id,
+                    VideoStatus.FAILED,
+                    error_message=f"retry failed: {exc}",
+                )
                 await session.commit()
+                logger.error(f"[{task_id}] video={video_id} retry failed: {exc}")
         else:
             await video_service.update_status(
                 video_id,
