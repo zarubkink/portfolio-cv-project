@@ -35,6 +35,7 @@ from src.services.exceptions import is_retriable_without_limit
 from src.services.tractor_service import TractorService
 from src.services.video_executor import run_video_in_process_pool
 from src.services.video_service import VideoService
+from src.services.visit_service import VisitService
 
 
 def _new_task_id() -> str:
@@ -115,8 +116,40 @@ async def recognize_video(
             )
         )
 
-    await event_service.create_many(payloads)
+    persisted_events = await event_service.create_many(payloads)
+    await _aggregate_visits(
+        video_id=video_id,
+        station_id=station.id if station is not None else None,
+        persisted_events=persisted_events,
+        visit_service=VisitService(session),
+    )
     return len(events), frames_processed, triggers_fired
+
+
+async def _aggregate_visits(
+    *,
+    video_id: int,
+    station_id: int | None,
+    persisted_events: list,
+    visit_service: VisitService,
+) -> None:
+    """Drive the visit state machine for one batch of persisted events.
+
+    Splits out from :func:`recognize_video` so it is easy to unit-test
+    in isolation. The video is re-fetched via the service so the call
+    site doesn't have to thread it through.
+    """
+    if station_id is None or not persisted_events:
+        return
+
+    from src.services.video_service import VideoService
+
+    video_service = VideoService(visit_service.session)
+    video = await video_service.get(video_id)
+    if video is None:
+        return
+
+    await visit_service.process_video_for_visits(video, persisted_events)
 
 
 async def process_video_with_error_handling(
