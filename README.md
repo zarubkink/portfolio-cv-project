@@ -65,7 +65,7 @@ agro_prj/
 ├── stack.env / stack.env.example
 ├── alembic.ini
 ├── alembic/
-│   ├── env.py                # async, filters paradedb system tables
+│   ├── env.py                # async, filters extension-managed tables (PostGIS, etc.)
 │   ├── script.py.mako
 │   └── versions/
 │       ├── 3112f42d1e35_initial_stations_tractors.py
@@ -113,7 +113,7 @@ agro_prj/
 * **Python 3.12** — modern typing (`StrEnum`, `type` statement, PEP 695 generics)
 * **FastAPI 0.115** + **uvicorn** — HTTP API
 * **SQLModel 0.0.38** on top of **SQLAlchemy 2.x** with **asyncpg** driver
-* **PostgreSQL 16+** (works on **paradedb/pg17** for local fallback) — JSONB, GENERATED columns, ENUMs, GIN + partial indexes
+* **PostgreSQL 17+** (default image: `postgres:17-alpine`) — JSONB, GENERATED columns, ENUMs, GIN + partial indexes
 * **Alembic** — async migrations (`env.py` is async-aware)
 * **OpenCV 4.11 (`opencv-contrib-python`)** — MOG2 + ArUco
 * **loguru** — structured logging
@@ -144,8 +144,8 @@ uv sync
 # default — pulls postgres:16-alpine
 docker compose up -d db
 
-# offline fallback — uses already-cached paradedb image (PG 17)
-DB_IMAGE=paradedb/paradedb:0.20.0-pg17 docker compose up -d db
+# Pin a different image tag if 17-alpine is not reachable from your network
+POSTGRES_DOCKER_TAG=16-alpine docker compose --env-file stack.env up -d db
 ```
 
 ### 3. Apply migrations and seed reference data
@@ -312,10 +312,10 @@ LOG_LEVEL=DEBUG
 | `DELETE` | `/v1/stations/{id}` | Soft delete (`deleted_at`) |
 | `POST`   | `/v1/tractors` | Create (with `aruco_ids: int[]`) |
 | `GET`    | `/v1/tractors` | List |
-| `POST`   | `/v1/videos/upload` | Multipart upload, SHA-256 dedup |
-| `POST`   | `/v1/videos/handle` | Server-side file path → enqueue for processing |
+| `POST`   | `/v1/videos/upload` | Multipart upload, SHA-256 dedup + background processing |
+| `POST`   | `/v1/videos/handle` | Server-side file path → enqueue for processing (used by ingestion) |
 | `GET`    | `/v1/videos` | List videos |
-| `GET`    | `/v1/videos/{id}` | Read one |
+| `GET`    | `/v1/videos/{id}` | Read one with frames/triggers/events counts |
 
 See [docs/API.md](docs/API.md) (WIP) for full request/response shapes.
 
@@ -345,7 +345,7 @@ The repo's `pyproject.toml` configures `ruff` for strict linting and
 | 3 | Video upload via API (`POST /v1/videos/upload`) | ✅ |
 | 4 | Folder watcher (ingestion) → E2E | ✅ |
 | 5 | Video processor (MOG2 + ArUco + ROI + Parked) | ✅ |
-| 6 | `ProcessPoolExecutor` integration with `/handle` | ⏳ |
+| 6 | `ProcessPoolExecutor` integration with `/handle` + events table | ✅ |
 | 7 | Scheduler for retry FAILED | ⏳ |
 | 8 | Visit aggregator (state machine) + API | ⏳ |
 | 9 | SSE for realtime + integration tests | ⏳ |

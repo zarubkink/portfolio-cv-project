@@ -17,7 +17,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from src.config.database import settings
 from src.dependencies import get_async_session
 from src.models.video_file import VideoFile
-from src.schemas.video_file import VideoStatus
+from src.services.video_handler import handle_video
 from src.services.video_service import VideoService
 
 router = APIRouter(prefix="/videos", tags=["videos"])
@@ -66,17 +66,15 @@ async def get_video(video_id: int, session: AsyncSession = Depends(get_async_ses
 
 @router.post("/upload", status_code=201)
 async def upload_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     station_id: int | None = Form(None),
     started_at: datetime = Form(...),
     ended_at: datetime = Form(...),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Multipart-загрузка видео. Сохраняем в cold_storage и регистрируем в БД.
-
-    В Этапе 3 НЕ запускаем обработку — только создаём запись со статусом CREATED.
-    Обработка подключится в Этапе 6 (через background_tasks).
+    """Multipart upload of a video. Saves to cold storage under the
+    SHA-256 content hash and schedules background processing.
     """
     if not file.filename:
         raise HTTPException(422, "file.filename required")
@@ -98,7 +96,6 @@ async def upload_video(
             ended_at=ended_at,
             station_id=station_id,
         )
-        # Переименуем под content_hash — идемпотентное хранение.
         content_hash_hex = vf.content_hash.hex()
         final_path = settings.videos_storage / f"{content_hash_hex}{ext}"
         if not final_path.exists():
@@ -107,34 +104,61 @@ async def upload_video(
             tmp_path.unlink(missing_ok=True)
         if final_path != Path(vf.storage_uri):
             await service.repo.update(vf, {"storage_uri": str(final_path)})
-        return _to_public(vf)
+
+        background_tasks.add_task(_background_process, vf.id, str(final_path))
+        return {
+            **_to_public(vf),
+            "background": True,
+        }
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
 
 
+async def _background_process(video_id: int, storage_uri: str) -> None:
+    """Bridge between FastAPI BackgroundTasks and our async handler.
+
+    BackgroundTasks runs sync and async callables directly in the loop,
+    so we just forward to the handler.
+    """
+    from src.services.video_handler import process_video_background
+
+    await process_video_background(uuid.uuid4().hex[:12], video_id, storage_uri)
+
+
 @router.post("/handle")
-async def handle_video(
+async def handle_video_endpoint(
+    background_tasks: BackgroundTasks,
     filepath: str = Form(...),
     station_id: int | None = Form(None),
+    station_code: str | None = Form(None),
     started_at: datetime = Form(...),
     ended_at: datetime = Form(...),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Эндпоинт для ingestion: путь уже на сервере.
+    """Server-side file path → register and process in background.
 
-    В Этапе 3 — только регистрация в БД, без обработки.
-    Обработка будет добавлена в Этапе 6 (POST /handle с background_tasks).
+    Used by the ingestion watcher once the clip is in cold storage.
+    Accepts either ``station_id`` or ``station_code`` (the watcher uses
+    the latter because the source filename encodes the station).
     """
-    service = VideoService(session)
-    vf = await service.create_and_commit(
-        storage_uri=filepath,
+    if station_id is None and station_code:
+        from src.repositories.station import StationRepository
+
+        station_repo = StationRepository(session)
+        station = await station_repo.get_by_code(station_code)
+        if station is None:
+            raise HTTPException(422, f"Unknown station_code={station_code!r}")
+        station_id = station.id
+    return await handle_video(
+        task_id=None,
+        filepath=filepath,
+        station_id=station_id,
         started_at=started_at,
         ended_at=ended_at,
-        station_id=station_id,
+        session=session,
+        background_tasks=background_tasks,
     )
-    return {
-        "status": "queued" if vf.status == VideoStatus.CREATED else "ok",
-        "video_id": vf.id,
-        **_to_public(vf),
-    }

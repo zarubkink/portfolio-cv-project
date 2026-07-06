@@ -13,8 +13,10 @@ class TractorRepository(AsyncRepository[Tractor]):
     async def get_by_any_aruco_id(self, aruco_id: int) -> Tractor | None:
         """Поиск трактора по любому из его aruco_ids.
 
-        Использует GIN-индекс ix_tractors_aruco_ids, если он создан миграцией."""
-        stmt = select(Tractor).where(text("$1 = ANY(aruco_ids)")).params(aruco_id)
+        Использует GIN-индекс ix_tractors_aruco_ids (создан миграцией).
+        SQL компилируется в ``WHERE :p = ANY(aruco_ids)``.
+        """
+        stmt = select(Tractor).where(text(":p = ANY(aruco_ids)").bindparams(p=aruco_id))
         res = await self.session.exec(stmt)
         return res.first()
 

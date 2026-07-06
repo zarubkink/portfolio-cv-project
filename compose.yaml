@@ -1,20 +1,16 @@
 services:
   db:
-
-    image: paradedb/paradedb:${POSTGRES_DOCKER_TAG:-0.20.0-pg17}
+    image: postgres:${POSTGRES_DOCKER_TAG}
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-agro}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agro}
-      POSTGRES_DB: ${POSTGRES_DB:-agro}
+    env_file: stack.env
     volumes:
       - ./data/database:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT}:5432"
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready -U ${POSTGRES_USER:-agro} -d ${POSTGRES_DB:-agro}
+        - pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}
       interval: 5s
       timeout: 5s
       retries: 10
@@ -28,25 +24,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    env_file: stack.env
     environment:
-      DB_URL: postgresql+asyncpg://${POSTGRES_USER:-agro}:${POSTGRES_PASSWORD:-agro}@db:5432/${POSTGRES_DB:-agro}
-      VIDEOS_STORAGE: /app/data/videos
-      FAILED_VIDEOS_FOLDER: /app/data/failed_videos
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      MAX_PROCESS_WORKERS: ${MAX_PROCESS_WORKERS:-4}
-      ARUCO_DICT: ${ARUCO_DICT:-DICT_4X4_50}
-      MIN_ARUCO_SIDE_PIXELS: ${MIN_ARUCO_SIDE_PIXELS:-30}
-      MIN_CONTOUR_AREA: ${MIN_CONTOUR_AREA:-5000}
-      MOG2_HISTORY: ${MOG2_HISTORY:-200}
-      MOG2_VAR_THRESHOLD: ${MOG2_VAR_THRESHOLD:-50}
-      VELOCITY_PX_THRESHOLD: ${VELOCITY_PX_THRESHOLD:-3.0}
-      MOG2_MASS_MIN: ${MOG2_MASS_MIN:-1000}
-      ENTRY_CONFIRM_SECONDS: ${ENTRY_CONFIRM_SECONDS:-1.0}
-      EXIT_CONFIRM_SECONDS: ${EXIT_CONFIRM_SECONDS:-10.0}
-      STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-5}
+      DB_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     volumes:
       - ./data/videos:/app/data/videos
       - ./data/failed_videos:/app/data/failed_videos
+      - ./data/queue:/app/data/queue
     ports:
       - "8000:8000"
     command: ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -65,13 +49,9 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      API_URL: http://api:8000/v1/videos/handle
-      QUEUES_ROOT: /app/data/queue
-      VIDEOS_STORAGE: /app/data/videos
-      FAILED_VIDEOS_FOLDER: /app/data/failed_videos
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    env_file: stack.env
     volumes:
       - ./data/queue:/app/data/queue
       - ./data/videos:/app/data/videos
+      - ./data/failed_videos:/app/data/failed_videos
     command: ["uv", "run", "python", "-m", "ingestion.main"]
