@@ -5,5 +5,6 @@ from src.models.event import Event
 from src.models.station import Station
 from src.models.tractor import Tractor
 from src.models.video_file import VideoFile
+from src.models.visit import Visit
 
-__all__ = ["BaseFields", "Event", "Station", "Tractor", "VideoFile"]
+__all__ = ["BaseFields", "Event", "Station", "Tractor", "VideoFile", "Visit"]
