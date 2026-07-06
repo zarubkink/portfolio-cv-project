@@ -42,6 +42,19 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    # The ArUco pipeline runs in a ProcessPoolExecutor sized by
+    # MAX_PROCESS_WORKERS (see stack.env.example). Each worker forks
+    # from the api process, so leave headroom for the parent too.
+    # `shm_size` raises /dev/shm — OpenCV's VideoCapture needs more
+    # than the docker default of 64 MiB for high-resolution clips.
+    shm_size: "512m"
+    deploy:
+      resources:
+        limits:
+          # Cap CPU so a runaway pool can't starve other containers.
+          # Set to MAX_PROCESS_WORKERS + 2 (one for uvicorn + one slack).
+          cpus: "6"
+          memory: 2G
 
   ingestion:
     image: agro-tracking:local
@@ -55,3 +68,8 @@ services:
       - ./data/videos:/app/data/videos
       - ./data/failed_videos:/app/data/failed_videos
     command: ["uv", "run", "python", "-m", "ingestion.main"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
