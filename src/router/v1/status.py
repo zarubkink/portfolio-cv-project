@@ -2,7 +2,8 @@
 and station, plus the visit history.
 
 These endpoints are intentionally query-only: writes go through the
-video handler's call into :class:`VisitService`.
+video handler's call into :class:`VisitService`. The SSE stream is the
+realtime counterpart to the JSON endpoints.
 """
 
 from __future__ import annotations
@@ -11,10 +12,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from src.dependencies import get_async_session
 from src.schemas.visit import VisitPublic
 from src.services.visit_service import VisitService
+from src.sse.channels import tractor_status_channel
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -77,3 +80,16 @@ async def visits_history(
         )
         for v in rows
     ]
+
+
+@router.get("/stream")
+async def stream_status() -> EventSourceResponse:
+    """Server-Sent Events stream of visit state changes.
+
+    Emits ``event: visit_state_change`` messages, one per state
+    transition (ENTERING on creation, PRESENT on entry_confirm, LEAVING
+    when the tractor disappears, CLOSED when the visit is finalised).
+    The first message is ``event: ready`` so clients can detect that
+    the connection is established.
+    """
+    return EventSourceResponse(tractor_status_channel.stream())
