@@ -138,3 +138,30 @@ class VideoService:
         await self.repo.update(vf, {"storage_uri": str(dst)})
         logger.warning(f"VideoFile id={vf.id} moved to failed: {dst}")
         return str(dst)
+
+    async def mark_unlimited_retry(self, vf_id: int) -> VideoFile | None:
+        """Mark a FAILED video for unlimited retries (retry_count → NULL)."""
+        return await self.repo.update_by_id(vf_id, {"retry_count": None})
+
+    async def mark_permanently_failed(
+        self,
+        vf_id: int,
+        new_status: VideoStatus = VideoStatus.INVALID,
+    ) -> VideoFile | None:
+        """Move the file to failed_videos/ and flip status to INVALID.
+
+        Idempotent: if the file is already in failed_videos/, only the
+        status is updated. Used by the retry scheduler once
+        ``max_retry_attempts`` is exceeded.
+        """
+        moved = await self.move_to_failed(vf_id)
+        vf = await self.repo.get(vf_id)
+        if vf is None:
+            return None
+        data: dict = {
+            "status": new_status,
+            "error_message": "max_retry_attempts exceeded",
+        }
+        if moved:
+            data["storage_uri"] = moved
+        return await self.repo.update(vf, data)
