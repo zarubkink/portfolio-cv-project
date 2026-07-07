@@ -18,8 +18,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.schemas.detector import ArucoDetection
-
 
 class EdgeEventIn(BaseModel):
     """One detection payload from the edge process.
@@ -66,9 +64,3 @@ class EdgeBatchOut(BaseModel):
 
 
 __all__ = ["EdgeBatchIn", "EdgeBatchOut", "EdgeEventIn"]
-
-
-# Re-export for the consumer that imports ArucoDetection when it
-# converts raw edge detections to EventCreate — keeps the schema
-# surface in one place.
-_ = ArucoDetection
