@@ -15,6 +15,27 @@ services:
       timeout: 5s
       retries: 10
 
+  mqtt:
+    image: eclipse-mosquitto:${MQTT_DOCKER_TAG}
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT}:1883"
+    volumes:
+      - ./data/mqtt:/mosquitto/data
+      - ./mosquitto:/mosquitto/config
+    # Allow anonymous connections from inside the docker network
+    # (api/ingestion/mqtt_consumer/edge). For production switch to
+    # a password file and set MQTT_USERNAME / MQTT_PASSWORD.
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 5 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   api:
     build:
       context: .
@@ -23,6 +44,8 @@ services:
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      mqtt:
         condition: service_healthy
     env_file: stack.env
     environment:
@@ -55,6 +78,22 @@ services:
           # Set to MAX_PROCESS_WORKERS + 2 (one for uvicorn + one slack).
           cpus: "6"
           memory: 2G
+
+  mqtt_consumer:
+    image: agro-tracking:local
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+    env_file: stack.env
+    command: ["uv", "run", "python", "-m", "mqtt_consumer.main"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
 
   ingestion:
     image: agro-tracking:local
