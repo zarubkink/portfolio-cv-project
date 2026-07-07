@@ -86,9 +86,11 @@ live "who is at which station right now" feed queryable through REST.
 
 ```
 agro_prj/
-├── compose.yaml              # docker-compose: db + api + ingestion
+├── compose.yaml              # docker-compose: db + api + ingestion + mqtt + mqtt_consumer
 ├── pyproject.toml            # uv-managed deps + ruff/pytest config
 ├── stack.env / stack.env.example
+├── mosquitto/
+│   └── mosquitto.conf        # eclipse-mosquitto broker config
 ├── alembic.ini
 ├── alembic/
 │   ├── env.py                # sync psycopg2 for ENUM-aware DDL
@@ -109,7 +111,8 @@ agro_prj/
 │   │   ├── detector.py
 │   │   ├── threads.py
 │   │   ├── scheduler.py
-│   │   └── visit.py
+│   │   ├── visit.py
+│   │   └── mqtt.py
 │   ├── models/               # SQLModel table classes
 │   ├── schemas/              # Pydantic request/response + NamedTuples
 │   ├── repositories/         # generic AsyncRepository[T]
@@ -123,17 +126,25 @@ agro_prj/
 │   │   ├── event_service.py
 │   │   ├── visit_service.py  # state-machine aggregation
 │   │   ├── scheduler.py      # retry + stale tick loop
+│   │   ├── mqtt_client.py    # aiomqtt wrapper (publish + subscribe + reconnect)
 │   │   └── exceptions.py
 │   └── router/v1/
 │       ├── station.py
 │       ├── tractor.py
 │       ├── video.py
+│       ├── events.py         # POST /v1/events/ingest (edge MQTT path)
 │       ├── scheduler.py
 │       └── status.py
 ├── ingestion/                # standalone watcher process
 │   ├── config.py
 │   ├── cursor.py
 │   ├── exceptions.py
+│   └── main.py
+├── edge/                     # farm-side RTSP -> ArUco -> MQTT pipeline
+│   ├── config.py
+│   └── main.py
+├── mqtt_consumer/            # broker -> FastAPI /v1/events/ingest
+│   ├── config.py
 │   └── main.py
 ├── scripts/
 │   ├── seed_reference.py
@@ -144,7 +155,8 @@ agro_prj/
 └── data/
     ├── queue/STATION_01..35/ # incoming (watcher reads from here)
     ├── videos/               # cold storage, named <hash>.<ext>
-    └── failed_videos/        # moved here after retry budget exhausted
+    ├── failed_videos/        # moved here after retry budget exhausted
+    └── mqtt/                 # mosquitto persistence (compose volume)
 ```
 
 ---
@@ -344,6 +356,71 @@ curl -X POST http://localhost:8000/v1/videos/upload \
 
 ---
 
+## Edge pipeline (MQTT)
+
+The `edge/` package runs on a Raspberry Pi at the farm, opens an RTSP
+camera stream, runs the same MOG2 + ArUco detectors and publishes
+detection batches to MQTT. The server-side `mqtt_consumer/`
+subscribes to `farm/+/detections` and forwards each batch to
+`POST /v1/events/ingest`.
+
+```
+Pi camera  --RTSP-->  edge/main.py  --MQTT-->  mqtt  --MQTT-->  mqtt_consumer/main.py  --HTTP-->  api
+```
+
+**Edge process** (`edge/main.py`):
+
+* Opens `cv2.VideoCapture(EDGE_RTSP_URL)` and reads frames on a
+  dedicated coroutine. The detector loop is paced to
+  `EDGE_FPS_TARGET` (default 10 fps) so a 60-fps camera doesn't
+  burn CPU on frames we don't need.
+* Runs `TriggerDetector` + `ArucoDetector` per frame, accumulates
+  detections into a buffer protected by `asyncio.Lock`.
+* A separate flush task publishes the buffer to
+  `farm/<station_code>/detections` every
+  `EDGE_PUBLISH_INTERVAL_SEC` (default 5 s) or when the buffer
+  reaches `EDGE_PUBLISH_MAX_EVENTS` (default 500).
+* Reconnects to the RTSP source with back-off on stream failure;
+  SIGINT/SIGTERM set a `stop_event` so the loop exits cleanly and
+  publishes a final zero-event heartbeat.
+
+**MqttClient** (`src/services/mqtt_client.py`): async context
+manager around `aiomqtt.Client`. URL parser accepts
+`mqtt://`/`tcp://`/`mqtts://` and switches on TLS automatically.
+`publish()` encodes dicts to JSON; `run_forever()` subscribes and
+swallows `aiomqtt.MqttError` with exponential back-off so a flaky
+link on the farm does not kill the consumer.
+
+**Server-side consumer** (`mqtt_consumer/main.py`): subscribes to
+`MQTT_DETECTION_TOPIC` (default `farm/+/detections`), normalises
+the edge's monotonic timestamps to ISO-8601, validates against
+`EdgeBatchIn`, then POSTs to `/v1/events/ingest` via `httpx`.
+5xx and `httpx.HTTPError` retry with back-off up to
+`CONSUMER_MAX_RETRIES`; 4xx is permanent (programming error).
+
+**Sentinel pattern**: each station owns exactly one
+`edge://<station_code>` row in `video_files`, identified by
+`sha256("edge://<station_code>")` (the existing `UNIQUE` on
+`content_hash` enforces "one sentinel per station"). The
+`get_or_create_edge_sentinel` service method either creates the
+sentinel with `status=PROCESSING` or widens the
+`[started_at, ended_at]` window on subsequent batches. Events
+written by `/v1/events/ingest` FK to the sentinel, so the
+`events.video_file_id NOT NULL` constraint is satisfied without
+any schema change.
+
+The broker runs as the `mqtt` service in `compose.yaml` using
+`eclipse-mosquitto:2.0`; config lives in `mosquitto/mosquitto.conf`
+(anonymous listener, persistence to `data/mqtt/`).
+
+For an end-to-end smoke test against a running stack:
+
+```bash
+uv run python scripts/smoke_mqtt_ingest.py
+```
+
+---
+
 ## Retry scheduler
 
 `VideoRetryScheduler` runs a periodic tick:
@@ -392,6 +469,21 @@ STALE_CHECK_INTERVAL_SECONDS=5
 RECOVERY_GRACE_MULTIPLIER=3.0
 
 LOG_LEVEL=INFO
+
+MQTT_DOCKER_TAG=2.0
+MQTT_BROKER_URL=mqtt://mqtt:1883
+MQTT_CLIENT_ID=agro-tracking
+MQTT_QOS=1
+MQTT_DETECTION_TOPIC=farm/+/detections
+
+CONSUMER_API_URL=http://api:8000
+CONSUMER_MAX_RETRIES=3
+
+EDGE_RTSP_URL=rtsp://localhost:8554/cam
+EDGE_STATION_CODE=STATION_EDGE
+EDGE_FPS_TARGET=10.0
+EDGE_PUBLISH_INTERVAL_SEC=5.0
+EDGE_PUBLISH_MAX_EVENTS=500
 ```
 
 ---
@@ -418,6 +510,7 @@ LOG_LEVEL=INFO
 | `GET`    | `/v1/status/tractor/{id}` | Where is this tractor right now? (`ABSENT` if no open visit) |
 | `GET`    | `/v1/status/visits/history` | Closed visits, filterable by tractor/station |
 | `GET`    | `/v1/status/stream` | SSE stream of `visit_state_change` events |
+| `POST`   | `/v1/events/ingest` | Edge (MQTT consumer) detection-batch forwarder |
 | `POST`   | `/v1/admin/scheduler/tick` | One pass of the retry scheduler on demand |
 
 ---
@@ -425,12 +518,13 @@ LOG_LEVEL=INFO
 ## Development
 
 ```bash
-uv sync                                 # install deps
-uv run ruff check src/ ingestion/ scripts/ tests/   # lint
-uv run ruff format src/ ingestion/ scripts/ tests/  # auto-format
-uv run alembic check                    # drift detection vs models
-uv run pytest tests/unit/               # fast isolated tests (no I/O)
-uv run pytest tests/integration/        # E2E; requires the compose stack up
+uv sync                                          # install deps
+uv run ruff check src/ ingestion/ edge/ mqtt_consumer/ scripts/ tests/   # lint
+uv run ruff format src/ ingestion/ edge/ mqtt_consumer/ scripts/ tests/  # auto-format
+uv run alembic check                             # drift detection vs models
+uv run pytest tests/unit/                        # fast isolated tests (no I/O)
+uv run pytest tests/integration/                 # E2E; requires the compose stack up
+uv run python scripts/smoke_mqtt_ingest.py       # round-trip the MQTT ingest path
 ```
 
 The repo's `pyproject.toml` configures `ruff` for strict linting and
