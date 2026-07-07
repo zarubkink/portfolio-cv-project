@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +12,21 @@ from src.models.video_file import VideoFile
 from src.repositories.video_file import VideoFileRepository
 from src.schemas.video_file import VideoStatus
 from src.utils import hash_large_file
+
+
+def _edge_sentinel_uri(station_code: str) -> str:
+    """Stable URI used as ``storage_uri`` for the per-station sentinel.
+
+    The literal ``edge://`` prefix keeps the sentinel distinct from
+    real upload paths and lets the cleanup job find it with a
+    ``LIKE 'edge://%'`` query.
+    """
+    return f"edge://{station_code}"
+
+
+def _edge_sentinel_hash(station_code: str) -> bytes:
+    """SHA-256 of the sentinel URI — used as the unique ``content_hash``."""
+    return hashlib.sha256(_edge_sentinel_uri(station_code).encode()).digest()
 
 
 def _to_naive_utc(dt: datetime) -> datetime:
@@ -138,6 +154,65 @@ class VideoService:
         await self.repo.update(vf, {"storage_uri": str(dst)})
         logger.warning(f"VideoFile id={vf.id} moved to failed: {dst}")
         return str(dst)
+
+    async def get_or_create_edge_sentinel(
+        self,
+        station_id: int,
+        station_code: str,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> tuple[VideoFile, bool]:
+        """Find or create the per-station live-stream sentinel.
+
+        The sentinel is a regular ``VideoFile`` row that represents
+        the never-ending stream from an edge camera. Its
+        ``content_hash`` is ``sha256("edge://<station_code>")`` so
+        the existing UNIQUE constraint enforces "one sentinel per
+        station" without a new migration. ``status`` is held at
+        ``PROCESSING`` until a cleanup job decides otherwise.
+
+        The ``ended_at`` column is bumped on every call so the
+        sentinel acts as a low-water-mark of the latest event
+        time. ``started_at`` is left at the very first event's
+        time so the visit aggregator keeps the right window.
+
+        Returns ``(sentinel, created_now)``.
+        """
+        started_naive = _to_naive_utc(started_at)
+        ended_naive = _to_naive_utc(ended_at)
+        if started_naive >= ended_naive:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "started_at must be < ended_at",
+            )
+        content_hash = _edge_sentinel_hash(station_code)
+        existing = await self.repo.get_by_hash(content_hash)
+        if existing is not None:
+            # Extend the live window forward; never move it back.
+            new_ended = max(existing.ended_at, ended_naive)
+            new_started = min(existing.started_at, started_naive)
+            await self.repo.update(
+                existing,
+                {
+                    "started_at": new_started,
+                    "ended_at": new_ended,
+                    "station_id": station_id,
+                },
+            )
+            return existing, False
+
+        sentinel = await self.repo.create({
+            "station_id": station_id,
+            "storage_uri": _edge_sentinel_uri(station_code),
+            "content_hash": content_hash,
+            "started_at": started_naive,
+            "ended_at": ended_naive,
+            "status": VideoStatus.PROCESSING,
+        })
+        logger.info(
+            f"Edge sentinel created for {station_code}: video_file_id={sentinel.id}"
+        )
+        return sentinel, True
 
     async def mark_unlimited_retry(self, vf_id: int) -> VideoFile | None:
         """Mark a FAILED video for unlimited retries (retry_count → NULL)."""
